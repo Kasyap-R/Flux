@@ -1,5 +1,5 @@
 use clap::Parser;
-use core::fmt;
+use core::{fmt, num};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -42,9 +42,14 @@ impl FileType {
 #[derive(Clone, Debug)]
 enum MarkdownToken {
     Bold,
+    Italic,
+    BoldItalic,
+    InlineCode,
+    CodeBlock,
     Header1,
     Header2,
     Header3,
+    BreakLine,
     Text(String),
 }
 
@@ -75,7 +80,10 @@ fn md_tags_to_tokens() -> HashMap<String, MarkdownToken> {
     map.insert("#".to_string(), Header1);
     map.insert("##".to_string(), Header2);
     map.insert("###".to_string(), Header3);
+    map.insert("***".to_string(), BoldItalic);
     map.insert("**".to_string(), Bold);
+    map.insert("`".to_string(), InlineCode);
+    map.insert("```".to_string(), CodeBlock);
     map
 }
 
@@ -109,73 +117,86 @@ fn validate_md(md_contents: &str) -> bool {
     false
 }
 
+// Goal: Create a Markdown Tokenizer given a string of valid markdown using a state machine
+// What is a markdown token? A markdown tag such as "*" or "###" is a markdownt token
+// a character is also a valid token, given it isn't a tog or part of a tag
+// the state you're in changes depending on the tag most recently processed
+// For example, if you processed "**", you are in a bold state until you find a corresponding "**"
+// while in bold state you can still add raw characters, which is what you do until you find an end
+// tag
+// Not all markdown tags have a closing tag, but all HTML tags do, so for some states, a newline
+// will denote the end of that state
+// No nesting of tags so when we find a tag, we continuously add chars until we find its end
+
+fn handle_header1(md_contents: &str, i: usize) -> i32 {
+    return 3;
+}
+
 fn tokenize_md(md_contents: &str) -> Vec<MarkdownToken> {
     use MarkdownToken::*;
     println!("{}", md_contents);
-    let mut token_list: Vec<MarkdownToken> = Vec::new();
+    let len = md_contents.len();
     let tags_to_tokens = md_tags_to_tokens();
-    let mut curr_sequence: String = "".to_string();
-    let chars: Vec<char> = md_contents.chars().collect();
-    // For each char
-    //  add it to the curr_sequence string
-    //  if curr_sequence combined with the next char is a valid token, continue
-    //  else if curr_sequence is a token, add that token to token list,
-    //  else if curr_char is a token, add curr_sequence (minus last) as a string and set curr_sequence to just
-    //  this char
-    for (index, c) in chars.iter().enumerate() {
-        curr_sequence.push(*c);
-        // check if adding the next token creates a token
-        // NOTE: doesn't really work with non-uniform tokens of length > 3 if the first two chars
-        // make a token and the doesn't but the fourth does. Don't know if this will ever be a
-        // problem
-        let mut sequence_plus_next = curr_sequence.clone();
 
-        if index < chars.len() - 1 {
-            sequence_plus_next.push(chars[index + 1]);
-            if let Some(_x) = tags_to_tokens.get(&sequence_plus_next) {
-                continue;
-            }
-        }
-        if let Some(x) = tags_to_tokens.get(&curr_sequence) {
-            token_list.push(x.clone());
-            curr_sequence.clear();
-        } else if let Some(x) = tags_to_tokens.get(&c.to_string()) {
-            // If this is a single token that's made it this far, tokenize
-            if curr_sequence.len() == 1 {
-                token_list.push(x.clone());
-                curr_sequence.clear();
-                continue;
-            }
-            // Otherwise Add all previous chars excluding the current as a text token
-            let text = curr_sequence[..curr_sequence.len() - 1].to_string();
-            token_list.push(Text(text));
+    let mut tokens: Vec<MarkdownToken> = Vec::new();
+    let mut i = 0;
 
-            // if this character isn't part of a multi char sequence, tokenize it as well
-            if index >= chars.len() - 1 {
+    let valid_tags: Vec<String> = vec!["***".to_string(), "###".to_string(), "```".to_string()];
+    while i < len {
+        for str in &valid_tags {
+            if !md_contents[i..].starts_with(str) {
                 continue;
             }
-            let next_sequence_len = sequence_plus_next.len();
-            match tags_to_tokens
-                .get(&sequence_plus_next[next_sequence_len - 2..=next_sequence_len - 1])
-            {
-                Some(_x) => {
-                    curr_sequence.clear();
-                    curr_sequence.push(*c);
-                }
-                None => {
-                    curr_sequence.clear();
-                    token_list.push(x.clone());
+            let token_len = str.len();
+            let token;
+            if let Some(x) = md_tags_to_tokens().get(str) {
+                token = x.clone();
+                tokens.push(token);
+                if let Some(end) = md_contents[i..token_len].find(str) {
+                    let adjusted_end = i + token_len + end;
+                    tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
+                    tokens.push(BoldItalic);
+                    i = adjusted_end + token_len;
                 }
             }
         }
+        if md_contents[i..].starts_with("***") {
+            tokens.push(BoldItalic);
+            if let Some(end) = md_contents[i + 3..].find("***") {
+                let adjusted_end = i + 3 + end;
+                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
+                tokens.push(BoldItalic);
+                i = adjusted_end + 3;
+            } else {
+                panic!();
+            }
+        } else if md_contents[i..].starts_with("###") {
+            tokens.push(Header3);
+            if let Some(end) = md_contents[i + 3..].find("\n") {
+                let adjusted_end = i + 3 + end;
+                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
+                tokens.push(Header3);
+                i = adjusted_end + 1;
+            } else {
+                panic!();
+            }
+        } else if md_contents[i..].starts_with("```") {
+            tokens.push(CodeBlock);
+            if let Some(end) = md_contents[i + 3..].find("```") {
+                let adjusted_end = i + 3 + end;
+                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
+                tokens.push(CodeBlock);
+                i = adjusted_end + 3;
+            } else {
+                panic!();
+            }
+        } else {
+            tokens.push(Text(md_contents[i..i + 1].to_string()));
+            i += 1;
+        }
     }
 
-    // Add remaining chars as text
-    if !curr_sequence.is_empty() {
-        token_list.push(Text(curr_sequence));
-    }
-
-    token_list
+    tokens
 }
 
 // Gonna have to create my own Errors later, one of which can hold IO errors
@@ -201,6 +222,8 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
         .map(str::trim)
         .collect::<Vec<&str>>()
         .join("\n");
+    // This last new line is needed for tokenization
+    md_file_contents.push('\n');
     let tokens = tokenize_md(&md_file_contents);
     println!("{:#?}", tokens);
 
