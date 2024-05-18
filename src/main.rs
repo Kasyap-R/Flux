@@ -2,6 +2,7 @@ use clap::Parser;
 use core::{fmt, num};
 use std::collections::HashMap;
 use std::fs::File;
+use std::hash::Hash;
 use std::io::{self, Read, Write};
 
 #[derive(Parser, Debug)]
@@ -39,7 +40,7 @@ impl FileType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 enum MarkdownToken {
     Bold,
     Italic,
@@ -49,7 +50,7 @@ enum MarkdownToken {
     Header1,
     Header2,
     Header3,
-    BreakLine,
+    UnorderedList,
     Text(String),
 }
 
@@ -82,20 +83,54 @@ fn md_tags_to_tokens() -> HashMap<String, MarkdownToken> {
     map.insert("###".to_string(), Header3);
     map.insert("***".to_string(), BoldItalic);
     map.insert("**".to_string(), Bold);
+    map.insert("*".to_string(), Italic);
     map.insert("`".to_string(), InlineCode);
     map.insert("```".to_string(), CodeBlock);
+    map.insert("-".to_string(), UnorderedList);
     map
 }
 
-fn closers_md_to_html_map() -> HashMap<String, String> {
+fn md_tokens_to_html_openers() -> HashMap<MarkdownToken, String> {
+    use MarkdownToken::*;
     let mut map = HashMap::new();
-    map.insert("#".to_string(), "<h1>".to_string());
+    map.insert(Header1, "<h1>".to_string());
+    map.insert(Header2, "<h2>".to_string());
+    map.insert(Header3, "<h3>".to_string());
+    map.insert(BoldItalic, "<bold><em>".to_string());
+    map.insert(Bold, "<bold>".to_string());
+    map.insert(Italic, "<em>".to_string());
+    map.insert(InlineCode, "<code>".to_string());
+    map.insert(CodeBlock, "<code>".to_string());
+    map.insert(UnorderedList, "<ul>".to_string());
+    map
+}
+fn md_tokens_to_html_closers() -> HashMap<MarkdownToken, String> {
+    use MarkdownToken::*;
+    let mut map = HashMap::new();
+    map.insert(Header1, "</h1>".to_string());
+    map.insert(Header2, "</h2>".to_string());
+    map.insert(Header3, "</h3>".to_string());
+    map.insert(BoldItalic, "</bold></em>".to_string());
+    map.insert(Bold, "</bold>".to_string());
+    map.insert(Italic, "</em>".to_string());
+    map.insert(InlineCode, "</code>".to_string());
+    map.insert(CodeBlock, "</code>".to_string());
+    map.insert(UnorderedList, "</ul>".to_string());
     map
 }
 
 fn md_openers_to_closers() -> HashMap<String, String> {
     let mut map = HashMap::new();
-    map.insert("#".to_string(), "<h1>".to_string());
+    map.insert("#".to_string(), "\n".to_string());
+    map.insert("##".to_string(), "\n".to_string());
+    map.insert("###".to_string(), "\n".to_string());
+    map.insert("***".to_string(), "***".to_string());
+    map.insert("**".to_string(), "**".to_string());
+    map.insert("*".to_string(), "*".to_string());
+    map.insert("```".to_string(), "```".to_string());
+    map.insert("`".to_string(), "`".to_string());
+    map.insert("-".to_string(), "\n".to_string());
+
     map
 }
 
@@ -128,69 +163,56 @@ fn validate_md(md_contents: &str) -> bool {
 // will denote the end of that state
 // No nesting of tags so when we find a tag, we continuously add chars until we find its end
 
-fn handle_header1(md_contents: &str, i: usize) -> i32 {
-    return 3;
-}
-
 fn tokenize_md(md_contents: &str) -> Vec<MarkdownToken> {
     use MarkdownToken::*;
     println!("{}", md_contents);
     let len = md_contents.len();
     let tags_to_tokens = md_tags_to_tokens();
+    let openers_to_closers = md_openers_to_closers();
 
     let mut tokens: Vec<MarkdownToken> = Vec::new();
     let mut i = 0;
 
-    let valid_tags: Vec<String> = vec!["***".to_string(), "###".to_string(), "```".to_string()];
+    let valid_tags: Vec<String> = vec![
+        "***".to_string(),
+        "**".to_string(),
+        "*".to_string(),
+        "###".to_string(),
+        "##".to_string(),
+        "#".to_string(),
+        "```".to_string(),
+        "`".to_string(),
+        "-".to_string(),
+    ];
     while i < len {
-        for str in &valid_tags {
-            if !md_contents[i..].starts_with(str) {
+        let mut is_tag = false;
+        for opener_tag in &valid_tags {
+            if !md_contents[i..].starts_with(opener_tag) {
                 continue;
             }
-            let token_len = str.len();
-            let token;
-            if let Some(x) = md_tags_to_tokens().get(str) {
-                token = x.clone();
+            is_tag = true;
+            let token = match tags_to_tokens.get(opener_tag) {
+                Some(t) => t.clone(),
+                None => panic!(),
+            };
+            let closer_tag: String = match openers_to_closers.get(opener_tag) {
+                Some(tag) => tag.clone(),
+                None => panic!(),
+            };
+            let closer_len = closer_tag.len();
+            let token_len = opener_tag.len();
+            tokens.push(token.clone());
+            if let Some(end) = md_contents[i + token_len..].find(&closer_tag) {
+                let adjusted_end = i + token_len + end;
+                tokens.push(Text(md_contents[i + token_len..adjusted_end].to_string()));
                 tokens.push(token);
-                if let Some(end) = md_contents[i..token_len].find(str) {
-                    let adjusted_end = i + token_len + end;
-                    tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
-                    tokens.push(BoldItalic);
-                    i = adjusted_end + token_len;
-                }
+                i = adjusted_end + closer_len;
+            } else {
+                panic!();
             }
+            break;
         }
-        if md_contents[i..].starts_with("***") {
-            tokens.push(BoldItalic);
-            if let Some(end) = md_contents[i + 3..].find("***") {
-                let adjusted_end = i + 3 + end;
-                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
-                tokens.push(BoldItalic);
-                i = adjusted_end + 3;
-            } else {
-                panic!();
-            }
-        } else if md_contents[i..].starts_with("###") {
-            tokens.push(Header3);
-            if let Some(end) = md_contents[i + 3..].find("\n") {
-                let adjusted_end = i + 3 + end;
-                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
-                tokens.push(Header3);
-                i = adjusted_end + 1;
-            } else {
-                panic!();
-            }
-        } else if md_contents[i..].starts_with("```") {
-            tokens.push(CodeBlock);
-            if let Some(end) = md_contents[i + 3..].find("```") {
-                let adjusted_end = i + 3 + end;
-                tokens.push(Text(md_contents[i + 3..adjusted_end].to_string()));
-                tokens.push(CodeBlock);
-                i = adjusted_end + 3;
-            } else {
-                panic!();
-            }
-        } else {
+        if !is_tag {
             tokens.push(Text(md_contents[i..i + 1].to_string()));
             i += 1;
         }
@@ -199,18 +221,18 @@ fn tokenize_md(md_contents: &str) -> Vec<MarkdownToken> {
     tokens
 }
 
-// Gonna have to create my own Errors later, one of which can hold IO errors
-// Other issue, just because a markdown element doesn't have closing tags, doesn't mean that the
-// HTML element also doesn't
-// I'm Thinking I write some function to tokenize the data and that is where I can do the stack
-// logic to determine faultiness and then this function just calls that and at that point can
-// easily write the neccesary components to the file
+fn token_to_html(token: &MarkdownToken, map: &HashMap<MarkdownToken, String>) -> String {
+    match token {
+        MarkdownToken::Text(s) => s.replace('\n', "<br>\n"),
+        _ => map
+            .get(token)
+            .cloned()
+            .unwrap_or_else(|| panic!("No matching HTML opener for token")),
+    }
+}
+
 fn md_to_html(md_path: &str) -> Result<String, &'static str> {
-    // Open fileone
-    // 3 maps needed
-    //      opener_md to opener_html
-    //      closer_md to closer_html
-    //      opener_md to closer_md
+    use MarkdownToken::*;
     let mut converted_string = String::new();
     let mut md_file = File::open(md_path).expect("IO Error");
     let mut md_file_contents = String::new();
@@ -225,7 +247,32 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
     // This last new line is needed for tokenization
     md_file_contents.push('\n');
     let tokens = tokenize_md(&md_file_contents);
+    let openers = md_tokens_to_html_openers();
+    let closers = md_tokens_to_html_closers();
     println!("{:#?}", tokens);
+    let mut in_tag = false;
+    // Will have to use a stack to keep track of most recent tag if I allow nested tag in future
+    for token in tokens {
+        let mut html: String;
+        if !in_tag {
+            match token {
+                Text(_) => (),
+                _ => in_tag = true,
+            }
+            html = token_to_html(&token, &openers);
+        } else {
+            html = token_to_html(&token, &closers);
+            match token {
+                Text(_) => (),
+                _ => {
+                    in_tag = false;
+                    html.push('\n');
+                }
+            }
+        }
+        converted_string.push_str(&html);
+    }
+    println!("{}", converted_string);
 
     Ok(converted_string)
 }
