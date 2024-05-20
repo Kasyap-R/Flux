@@ -5,12 +5,14 @@ use std::hash::Hash;
 use std::io::{self, Read, Write};
 
 #[derive(Parser, Debug)]
-#[command(version = "0.1", about = "A simple backup tool" , long_about = None)]
+#[command(version = "0.1", about = "A tool to convert between file types" , long_about = None)]
 struct Args {
     /// The file to read from
+    #[arg(short, long, default_value = "test_files/baby.md")]
     input_file: String,
 
     /// The file to write to
+    #[arg(short, long, default_value = "test_files/test.html")]
     output_file: String,
 }
 
@@ -43,6 +45,7 @@ impl FileType {
 enum MarkdownState {
     BOLD,
     ITALIC,
+    BoldAndItalic,
     InlineCode,
     CodeBlock,
     LINK,
@@ -95,6 +98,15 @@ impl MDParserState {
     }
 
     fn handle_bold_italic(&mut self) {
+        if &self.text[self.index..=self.index + 1] == "***" {
+            self.state = MarkdownState::BoldAndItalic;
+            self.index += 3;
+            let bold_and_italicized_text = self.parse_inline();
+            self.html.push_str(&format!(
+                "<em><strong>{}</strong></em>\n",
+                bold_and_italicized_text
+            ));
+        }
         if &self.text[self.index..=self.index + 1] == "**" {
             self.state = MarkdownState::BOLD;
             self.index += 2;
@@ -187,18 +199,58 @@ impl MDParserState {
 
     fn parse_inline(&mut self) -> String {
         let mut inline_html = "".to_string();
+        println!("{}", self.index);
+        println!("{}", self.length);
         let mut char = self.get_ith_char(self.index).unwrap();
         while self.index < self.length && "\n#".contains(char) {
             char = self.get_ith_char(self.index).unwrap();
             match char {
                 '*' => {
-                    self.handle_bold_italic();
+                    if &self.text[self.index..=self.index + 1] == "***" {
+                        self.index += 3;
+                        let bold_and_italicized_text = self.parse_inline();
+                        inline_html.push_str(&format!(
+                            "<em><strong>{}</strong></em>",
+                            bold_and_italicized_text
+                        ));
+                    }
+                    if &self.text[self.index..=self.index + 1] == "**" {
+                        self.index += 2;
+                        let bold_text = self.parse_inline();
+                        inline_html.push_str(&format!("<strong>{}</strong>", bold_text));
+                    } else {
+                        self.index += 1;
+                        let italic_text = self.parse_inline();
+                        inline_html.push_str(&format!("<em>{}</em>", italic_text));
+                    }
                 }
                 '[' => {
-                    self.handle_link();
+                    self.index += 1;
+                    let mut link_text = "".to_string();
+                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != ']'
+                    {
+                        link_text.push(self.get_ith_char(self.index).unwrap());
+                        self.index += 1;
+                    }
+                    self.index += 2; // Skip ']('
+                    let mut link_url = "".to_string();
+                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != ')'
+                    {
+                        link_url.push(self.get_ith_char(self.index).unwrap());
+                        self.index += 1;
+                    }
+                    inline_html.push_str(&format!("<a href={}>{}</a>\n", link_url, link_text));
                 }
                 '`' => {
-                    self.handle_code();
+                    self.index += 1;
+                    let mut code_text = "".to_string();
+                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != '`'
+                    {
+                        code_text.push(self.get_ith_char(self.index).unwrap());
+                        self.index += 1;
+                    }
+                    self.index += 1;
+                    inline_html.push_str(&format!("<code>{}</code>", code_text));
                 }
                 _ => inline_html.push(char),
             }
@@ -222,10 +274,14 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
     while parser.index < parser.length {
         let i = parser.index;
         let char: char = parser.get_ith_char(i).unwrap();
+        println!("{}", char);
         if parser.state == TEXT {
             match char {
                 '#' => parser.handle_header(),
-                '*' => parser.handle_bold_italic(),
+                '*' => {
+                    parser.handle_bold_italic();
+                    parser.index -= 1;
+                }
                 '[' => parser.handle_link(),
                 '`' => parser.handle_code(),
                 '\n' => parser.html.push_str("<br>\n"),
@@ -242,6 +298,7 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
         parser.index += 1;
     }
 
+    println!("{}", parser.html);
     Ok(parser.html)
 }
 
