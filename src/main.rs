@@ -187,8 +187,9 @@ impl MDParserState {
 
     fn parse_inline(&mut self) -> String {
         let mut inline_html = "".to_string();
-        let char = self.get_ith_char(self.index).unwrap();
+        let mut char = self.get_ith_char(self.index).unwrap();
         while self.index < self.length && "\n#".contains(char) {
+            char = self.get_ith_char(self.index).unwrap();
             match char {
                 '*' => {
                     self.handle_bold_italic();
@@ -196,9 +197,14 @@ impl MDParserState {
                 '[' => {
                     self.handle_link();
                 }
+                '`' => {
+                    self.handle_code();
+                }
+                _ => inline_html.push(char),
             }
+            self.index += 1;
         }
-        return "".to_string();
+        return inline_html;
     }
 
     fn get_ith_char(&self, index: usize) -> Option<char> {
