@@ -3,6 +3,7 @@
 ```
 let x = 5;
 ```
+`InlineCode`
 - Hey
 - This
 - is

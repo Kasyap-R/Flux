@@ -3,6 +3,7 @@ use core::fmt;
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{self, Read, Write};
+use std::marker;
 
 #[derive(Parser, Debug)]
 #[command(version = "0.1", about = "A tool to convert between file types" , long_about = None)]
@@ -291,7 +292,6 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 '[' => parser.handle_link(),
                 '`' => parser.handle_code(),
                 '\n' => {
-                    parser.html.push_str("<br>\n");
                     parser.index += 1;
                 }
                 '-' => {
@@ -310,7 +310,22 @@ fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.html.push_str("</ol>\n");
                 }
 
-                _ => parser.html.push(char),
+                ' ' => {
+                    parser.index += 1;
+                    // Should always be of state TEXT in this loop but just in case
+                    if parser.state == MarkdownState::TEXT {
+                        if parser.index < parser.length
+                            && parser.get_ith_char(parser.index).unwrap() == ' '
+                        {
+                            parser.html.push_str("<br>\n");
+                            parser.index += 1;
+                        }
+                    }
+                }
+                _ => {
+                    parser.html.push(char);
+                    parser.index += 1;
+                }
             }
         }
     }
