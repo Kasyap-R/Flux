@@ -9,6 +9,9 @@ let x = 5;
 - is
 - an
 
+This is just a normal  
+paragraph
+
 1. This
 2. Is
 3. An 
