@@ -1,9 +1,10 @@
-***HEllo***
+***HElloRANDY***
 ### HELLO GENTLEMAN
 ```
 let x = 5;
 ```
 `InlineCode`
+[Duck Duck GO](https://www.forbes.com)
 - Hey
 - This
 - is

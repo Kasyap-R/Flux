@@ -19,6 +19,7 @@ struct MDParser {
     index: usize,
     state: MarkdownState,
     list_level: usize,
+    is_inline: bool,
 }
 
 impl MDParser {
@@ -28,7 +29,7 @@ impl MDParser {
         md_file.read_to_string(&mut text).expect("Read Error");
         text = text
             .lines()
-            .map(str::trim)
+            .map(str::trim_start)
             .collect::<Vec<&str>>()
             .join("\n");
         let length = text.len();
@@ -39,6 +40,7 @@ impl MDParser {
             index: 0,
             state: MarkdownState::TEXT,
             list_level: 0,
+            is_inline: false,
         }
     }
 
@@ -60,24 +62,30 @@ impl MDParser {
 
     fn handle_bold_italic(&mut self) {
         if &self.text[self.index..=self.index + 2] == "***" {
-            self.state = MarkdownState::BoldAndItalic;
             self.index += 3;
-            let bold_and_italicized_text = self.parse_inline();
-            self.html.push_str(&format!(
-                "<em><strong>{}</strong></em>\n",
-                bold_and_italicized_text
-            ));
+            if self.state != MarkdownState::BoldAndItalic {
+                self.state = MarkdownState::BoldAndItalic;
+                let bold_and_italicized_text = self.parse_inline();
+                self.html.push_str(&format!(
+                    "<em><strong>{}</strong></em>\n",
+                    bold_and_italicized_text
+                ));
+            }
         } else if &self.text[self.index..=self.index + 1] == "**" {
-            self.state = MarkdownState::BOLD;
             self.index += 2;
-            let bold_text = self.parse_inline();
-            self.html
-                .push_str(&format!("<strong>{}</strong>\n", bold_text));
+            if self.state != MarkdownState::BOLD {
+                self.state = MarkdownState::BOLD;
+                let bold_text = self.parse_inline();
+                self.html
+                    .push_str(&format!("<strong>{}</strong>\n", bold_text));
+            }
         } else if self.get_ith_char(self.index).unwrap() == '*' {
-            self.state = MarkdownState::ITALIC;
             self.index += 1;
-            let italic_text = self.parse_inline();
-            self.html.push_str(&format!("<em>{}</em>\n", italic_text))
+            if self.state != MarkdownState::ITALIC {
+                self.state = MarkdownState::ITALIC;
+                let italic_text = self.parse_inline();
+                self.html.push_str(&format!("<em>{}</em>\n", italic_text))
+            }
         }
         self.state = MarkdownState::TEXT;
     }
@@ -96,13 +104,14 @@ impl MDParser {
             link_url.push(self.get_ith_char(self.index).unwrap());
             self.index += 1;
         }
+        self.index += 1;
         self.html
             .push_str(&format!("<a href={}>{}</a>\n", link_url, link_text));
         self.state = MarkdownState::TEXT;
     }
 
     fn handle_code(&mut self) {
-        if &self.text[self.index..=self.index + 2] == "```" {
+        if &self.index + 2 < self.length && &self.text[self.index..=self.index + 2] == "```" {
             self.state = MarkdownState::CodeBlock;
             self.index += 3;
             let mut code_block = "".to_string();
@@ -152,10 +161,22 @@ impl MDParser {
         }
     }
 
+    fn handle_text(&mut self) {
+        while self.index < self.length {
+            let char = self.get_ith_char(self.index).unwrap();
+            if "*[`".contains(char)
+                || (char.is_digit(10)
+                    && self.index + 1 < self.length
+                    && self.get_ith_char(self.index + 1).unwrap() == '.')
+            {
+                break;
+            }
+        }
+    }
+
     fn parse_inline(&mut self) -> String {
         let mut inline_html = "".to_string();
-        /* println!("{}", self.index);
-        println!("{}", self.length); */
+        self.is_inline = true;
         while self.index < self.length {
             let char = self.get_ith_char(self.index).unwrap();
             if char == '\n' {
@@ -167,56 +188,13 @@ impl MDParser {
             }
             match char {
                 '*' => {
-                    if &self.text[self.index..=self.index + 2] == "***" {
-                        self.index += 3;
-                        if self.state != MarkdownState::BoldAndItalic {
-                            let bold_and_italicized_text = self.parse_inline();
-                            inline_html.push_str(&format!(
-                                "<em><strong>{}</strong></em>",
-                                bold_and_italicized_text
-                            ));
-                        }
-                    } else if &self.text[self.index..=self.index + 1] == "**" {
-                        self.index += 2;
-                        if self.state != MarkdownState::BOLD {
-                            let bold_text = self.parse_inline();
-                            inline_html.push_str(&format!("<strong>{}</strong>", bold_text));
-                        }
-                    } else {
-                        self.index += 1;
-                        if self.state != MarkdownState::ITALIC {
-                            let italic_text = self.parse_inline();
-                            inline_html.push_str(&format!("<em>{}</em>", italic_text));
-                        }
-                    }
+                    self.handle_bold_italic();
                 }
                 '[' => {
-                    self.index += 1;
-                    let mut link_text = "".to_string();
-                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != ']'
-                    {
-                        link_text.push(self.get_ith_char(self.index).unwrap());
-                        self.index += 1;
-                    }
-                    self.index += 2; // Skip ']('
-                    let mut link_url = "".to_string();
-                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != ')'
-                    {
-                        link_url.push(self.get_ith_char(self.index).unwrap());
-                        self.index += 1;
-                    }
-                    inline_html.push_str(&format!("<a href={}>{}</a>\n", link_url, link_text));
+                    self.handle_link();
                 }
                 '`' => {
-                    self.index += 1;
-                    let mut code_text = "".to_string();
-                    while self.index < self.length && self.get_ith_char(self.index).unwrap() != '`'
-                    {
-                        code_text.push(self.get_ith_char(self.index).unwrap());
-                        self.index += 1;
-                    }
-                    self.index += 1;
-                    inline_html.push_str(&format!("<code>{}</code>", code_text));
+                    self.handle_code();
                 }
                 _ => inline_html.push(char),
             }
@@ -241,6 +219,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
         let i = parser.index;
         let char: char = parser.get_ith_char(i).unwrap();
         println!("Main Loop Char: {}", char);
+        println!("Main Loop Char ASCII: {}", char as u8);
         println!("Main Loop Index: {}", i);
         if parser.state == TEXT {
             match char {
@@ -250,9 +229,6 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 }
                 '[' => parser.handle_link(),
                 '`' => parser.handle_code(),
-                '\n' => {
-                    parser.index += 1;
-                }
                 '-' => {
                     parser.html.push_str("<ul>\n");
                     parser.index += 1;
@@ -262,24 +238,18 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.list_level -= 1;
                     parser.index += 1;
                 }
+                '\n' => parser.index += 1,
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
                     parser.html.push_str("<ol>\n");
                     parser.index += 2;
                     parser.handle_ordered_list();
                     parser.html.push_str("</ol>\n");
                 }
-
-                ' ' => {
-                    parser.index += 1;
-                    // Should always be of state TEXT in this loop but just in case
-                    if parser.state == MarkdownState::TEXT {
-                        if parser.index + 1 < parser.length
-                            && &parser.text[parser.index..=parser.index + 1] == " \n"
-                        {
-                            parser.html.push_str("<br>\n");
-                            parser.index += 1;
-                        }
-                    }
+                ' ' if parser.index + 2 < parser.length
+                    && &parser.text[parser.index + 1..=parser.index + 2] == " \n" =>
+                {
+                    parser.html.push_str("<br>\n");
+                    parser.index += 3;
                 }
                 _ => {
                     parser.html.push(char);
