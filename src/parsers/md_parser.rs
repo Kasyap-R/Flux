@@ -31,11 +31,7 @@ impl MDParser {
         let mut text = String::new();
         let html = String::new();
         md_file.read_to_string(&mut text).expect("Read Error");
-        text = text
-            .lines()
-            .map(str::trim_start)
-            .collect::<Vec<&str>>()
-            .join("\n");
+        text = MDParser::preprocess_md(text);
         let length = text.len();
         MDParser {
             text,
@@ -45,6 +41,23 @@ impl MDParser {
             list_level: 0,
             states: vec![MarkdownState::TEXT],
         }
+    }
+
+    fn preprocess_md(mut md_contents: String) -> String {
+        let lines = md_contents.lines();
+        let mut new_lines: Vec<&str> = Vec::new();
+        let mut in_code_block = false;
+        for mut line in lines {
+            if line.starts_with("```") {
+                in_code_block = !in_code_block;
+            }
+            if !in_code_block {
+                line = line.trim_start();
+            }
+            new_lines.push(line);
+        }
+        md_contents = new_lines.into_iter().collect::<Vec<&str>>().join("\n");
+        md_contents
     }
 
     fn handle_header(&mut self) {
@@ -234,7 +247,7 @@ impl MDParser {
         }
     }
 
-    fn handle_text(&mut self) {
+    fn handle_paragraph(&mut self) {
         self.push_state(MarkdownState::PARAGRAPH);
         self.html.push_str("<p>");
         while self.index < self.length {
@@ -378,7 +391,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 }
 
                 _ => {
-                    parser.handle_text();
+                    parser.handle_paragraph();
                 }
             }
         }
