@@ -14,6 +14,7 @@ enum MarkdownState {
     LINK,
     LIST,
     TEXT,
+    PARAGRAPH,
 }
 
 struct MDParser {
@@ -234,16 +235,26 @@ impl MDParser {
     }
 
     fn handle_text(&mut self) {
+        self.push_state(MarkdownState::PARAGRAPH);
+        self.html.push_str("<p>");
         while self.index < self.length {
+            // Use parse inline to parse till the end of the line and then do a check if there is a
+            // tag immediately following a newline
+            // but how do we account for <br> tags. I'll handle that in parse_inline()
+            // If there is a tag
+            self.parse_inline();
+            if self.index < self.length {
+                break;
+            }
             let char = self.get_ith_char(self.index).unwrap();
-            if "*[`".contains(char)
-                || (char.is_digit(10)
-                    && self.index + 1 < self.length
-                    && self.get_ith_char(self.index + 1).unwrap() == '.')
+            if "*[`-".contains(char)
+                || (char.is_digit(10) && self.get_ith_char(self.index + 1).unwrap() == '.')
             {
                 break;
             }
         }
+        self.html.push_str("</p>\n");
+        self.pop_state();
     }
 
     fn parse_inline(&mut self) {
@@ -270,6 +281,13 @@ impl MDParser {
                 }
                 '`' => {
                     self.handle_code();
+                }
+                ' ' if self.get_current_state() == MarkdownState::PARAGRAPH
+                    && self.check_next_chars(self.index, "  \n") =>
+                {
+                    self.html.push_str("<br>\n");
+                    self.index += 3;
+                    break;
                 }
                 _ => {
                     self.html.push(char);
@@ -308,7 +326,7 @@ impl MDParser {
             chars_since_newline += 1;
         }
 
-        if self.get_current_state() == MarkdownState::TEXT || chars_since_newline >= 50 {
+        if self.get_current_state() == MarkdownState::TEXT || chars_since_newline >= 80 {
             self.html.push('\n');
         }
     }
@@ -358,15 +376,9 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.handle_ordered_list();
                     parser.html.push_str("</ol>\n");
                 }
-                ' ' if parser.index + 2 < parser.length
-                    && &parser.text[parser.index + 1..=parser.index + 2] == " \n" =>
-                {
-                    parser.html.push_str("<br>\n");
-                    parser.index += 3;
-                }
+
                 _ => {
-                    parser.html.push(char);
-                    parser.index += 1;
+                    parser.handle_text();
                 }
             }
         }
