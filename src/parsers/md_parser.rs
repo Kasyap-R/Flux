@@ -1,8 +1,6 @@
 use std::fs::File;
 use std::io::Read;
 
-use clap::Parser;
-
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 enum MarkdownState {
     BOLD,
@@ -15,6 +13,8 @@ enum MarkdownState {
     LIST,
     TEXT,
     PARAGRAPH,
+    STRIKETHROUGH,
+    QUOTE,
 }
 
 struct MDParser {
@@ -253,14 +253,13 @@ impl MDParser {
         while self.index < self.length {
             // Use parse inline to parse till the end of the line and then do a check if there is a
             // tag immediately following a newline
-            // but how do we account for <br> tags. I'll handle that in parse_inline()
-            // If there is a tag
             self.parse_inline();
-            if self.index < self.length {
-                break;
-            }
-            let char = self.get_ith_char(self.index).unwrap();
-            if "*[`-".contains(char)
+            let char = match self.get_ith_char(self.index) {
+                Some(x) => x,
+                None => break,
+            };
+            if "#>-".contains(char)
+                || self.check_next_chars(self.index, "```")
                 || (char.is_digit(10) && self.get_ith_char(self.index + 1).unwrap() == '.')
             {
                 break;
@@ -268,6 +267,38 @@ impl MDParser {
         }
         self.html.push_str("</p>\n");
         self.pop_state();
+    }
+
+    fn handle_quotes(&mut self) {
+        self.push_state(MarkdownState::QUOTE);
+        self.html.push_str("<quoteblock>\n");
+        while self.check_next_chars(self.index, ">") {
+            self.index += 1;
+            self.parse_inline();
+            self.html.push('\n');
+        }
+        self.html.push_str("</quoteblock>\n");
+        self.pop_state();
+    }
+
+    fn handle_strikethrough(&mut self) {
+        if !self.check_next_chars(self.index, "~~") {
+            return;
+        }
+        self.index += 2;
+        let state = self.get_current_state();
+        match state {
+            MarkdownState::STRIKETHROUGH => {
+                self.pop_state();
+            }
+            _ => {
+                self.push_state(MarkdownState::STRIKETHROUGH);
+                self.html.push_str("<s>");
+                self.parse_inline();
+                self.html.push_str("</s>");
+                self.optionally_push_newline();
+            }
+        }
     }
 
     fn parse_inline(&mut self) {
@@ -281,6 +312,7 @@ impl MDParser {
             }
             let char = self.get_ith_char(self.index).unwrap();
             if char == '\n' {
+                self.html.push(' ');
                 self.index += 1;
                 break;
             }
@@ -294,6 +326,9 @@ impl MDParser {
                 }
                 '`' => {
                     self.handle_code();
+                }
+                '~' => {
+                    self.handle_strikethrough();
                 }
                 ' ' if self.get_current_state() == MarkdownState::PARAGRAPH
                     && self.check_next_chars(self.index, "  \n") =>
@@ -311,6 +346,9 @@ impl MDParser {
     }
 
     fn get_ith_char(&self, index: usize) -> Option<char> {
+        if index >= self.length {
+            return None;
+        }
         self.text.chars().nth(index)
     }
 
@@ -358,13 +396,11 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
     use MarkdownState::*;
     let md_file = File::open(md_path).expect("IO Error");
     let mut parser = MDParser::md_init_parser(md_file);
-    println!("Markdown Contents:\n========\n {}\n=========", &parser.text);
+    println!("====================================\nMarkdown Contents:\n====================================\n {}\n=====================================", &parser.text);
 
     while parser.index < parser.length {
         let i = parser.index;
         let char: char = parser.get_ith_char(i).unwrap();
-        println!("Main Loop Char: {}", char);
-        println!("Main Loop Index: {}", i);
         if parser.get_current_state() == TEXT {
             match char {
                 '#' => parser.handle_header(),
@@ -373,6 +409,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 }
                 '[' => parser.handle_link(),
                 '`' => parser.handle_code(),
+                '~' => parser.handle_strikethrough(),
                 '-' => {
                     parser.html.push_str("<ul>\n");
                     parser.index += 1;
@@ -382,6 +419,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.list_level -= 1;
                     parser.index += 1;
                 }
+                '>' => parser.handle_quotes(),
                 '\n' => parser.index += 1,
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
                     parser.html.push_str("<ol>\n");
@@ -397,7 +435,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
         }
     }
 
-    println!("{}", parser.html);
+    println!("HTML Contents:\n====================================\n {}\n=====================================", &parser.html);
     Ok(parser.html)
 }
 

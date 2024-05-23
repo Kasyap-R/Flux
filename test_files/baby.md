@@ -1,4 +1,4 @@
-    # Sample Markdown
+# Sample Markdown
 
 ## Heading Level 2
 
@@ -16,14 +16,22 @@ Here is another list:
 2. Second item
 3. Third item
 
-Here is some inline code: `let x = 10;`
+> This is a block quote
 
-And here is a code block:
+This is a Here not a bloc is some inline code: `let x = 10;`
+Block code ```can't be in``` be in a paragraph. 
+
+`Inline Code`
+
+~~Non-nested strikethrough~~
+
+And here is a valid code block:
 ```
 fn main() {
     println!("HELLO, world!");
 }
 ```
+~~STRIKETHROUGH~~
 This is another paragraph with a [link to Rust's website](https://www.rust-lang.org).
 
 
