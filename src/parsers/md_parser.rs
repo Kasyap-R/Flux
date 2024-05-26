@@ -13,7 +13,8 @@ enum MarkdownState {
     CodeBlock,
     HEADER,
     LINK,
-    LIST,
+    OrderedList,
+    UnorderedList,
     TEXT,
     PARAGRAPH,
     STRIKETHROUGH,
@@ -234,9 +235,7 @@ impl MDParser {
         self.parse_inline();
         self.html.push_str("</li>\n");
         let curr_indent = self.find_distance_to_non_whitespace(self.index);
-        if curr_indent == 0 {
-            return;
-        }
+
         let indent_difference: i32 = curr_indent as i32 - self.indentation_level as i32;
         if indent_difference > 5 {
             return;
@@ -260,7 +259,7 @@ impl MDParser {
                     match closest_key {
                         Some((&_k, &v)) => v.clone(),
                         None => {
-                            panic!("There should always be a lower indent level than the curr, if there is a higher one");
+                            panic!("Curr indent is not highest, but nothing lower exists");
                         }
                     }
                 } else {
@@ -271,30 +270,45 @@ impl MDParser {
                 }
             }
         };
+        let current_state: MarkdownState = self.get_current_state();
+        match current_state {
+            MarkdownState::OrderedList | MarkdownState::UnorderedList => (),
+            _ => panic!("Parsing list, but current state is NOT list"),
+        }
         self.list_level = curr_list_level;
         println!("{}", curr_char);
         if curr_char == '-' {
+            // If the curr indent level exists in the map and there is a swap in list type, then return
+            // But that doesn't mean we stop parsing at this indent level
+            if self.indent_to_list_level.contains_key(&curr_indent)
+                && current_state != MarkdownState::UnorderedList
+            {
+                return;
+            }
             self.index += curr_indent;
             self.index += 1;
             self.indentation_level = curr_indent;
-            if indent_difference == 0 {
+            if current_state == MarkdownState::UnorderedList && indent_difference == 0 {
                 self.handle_list_items();
-            } else if indent_difference <= 5 {
-                self.indent_to_list_level
-                    .insert(curr_indent, self.list_level);
+            } else {
                 self.handle_unordered_list();
             }
         } else if curr_char.is_digit(10) {
             if !self.check_next_chars(self.index + curr_indent + 1, ".") {
                 return;
             }
+            if self.indent_to_list_level.contains_key(&curr_indent)
+                && current_state != MarkdownState::OrderedList
+            {
+                return;
+            }
             println!("Indent Difference: {}", indent_difference);
             self.index += curr_indent;
             self.index += 2;
             self.indentation_level = curr_indent;
-            if indent_difference == 0 {
+            if current_state == MarkdownState::OrderedList && indent_difference == 0 {
                 self.handle_list_items();
-            } else if indent_difference <= 5 {
+            } else {
                 self.handle_ordered_list();
             }
         }
@@ -456,7 +470,7 @@ impl MDParser {
     }
 
     fn handle_ordered_list(&mut self) {
-        self.push_state(MarkdownState::LIST);
+        self.push_state(MarkdownState::OrderedList);
         let spaces = " ".repeat((self.list_level - 1) * 4);
         self.html.push_str(&format!("{}<ol>\n", spaces));
         self.index += 1;
@@ -467,7 +481,7 @@ impl MDParser {
 
     fn handle_unordered_list(&mut self) {
         // Ok
-        self.push_state(MarkdownState::LIST);
+        self.push_state(MarkdownState::UnorderedList);
         let spaces = " ".repeat((self.list_level - 1) * 4);
         self.html.push_str(&format!("{}<ul>\n", spaces));
         self.index += 1;
@@ -504,12 +518,14 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.max_list_level = 1;
                     // Clear the BTreeMap of everyting but the 0,0 pair
                     parser.indent_to_list_level.retain(|&k, _| k == 0);
+                    parser.indentation_level = 0;
                 }
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
                     parser.handle_ordered_list();
                     parser.list_level = 1;
                     parser.max_list_level = 1;
                     parser.indent_to_list_level.retain(|&k, _| k == 0);
+                    parser.indentation_level = 0;
                 }
 
                 _ => {

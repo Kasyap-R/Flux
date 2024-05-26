@@ -1,30 +1,21 @@
-# Sample Markdown
+- Level 1 - Item 1
+  - Level 2 - Item 1
+    - Level 3 - Item 1
+      1. Level 4 - Ordered Item 1
+         - Level 5 - Unordered Item 1
+         - Level 5 - Unordered Item 2
+      2. Level 4 - Ordered Item 2
+  - Level 2 - Item 2
+    1. Level 3 - Ordered Item 1
+       - Level 4 - Unordered Item 1
+    2. Level 3 - Ordered Item 2
+- Level 1 - Item 2
+  1. Level 2 - Ordered Item 1
+     - Level 3 - Unordered Item 1
+       1. Level 4 - Ordered Item 1
+  2. Level 2 - Ordered Item 2
+     - Level 3 - Unordered Item 1
+  3. Level 2 - Ordered Item 3
+     - Level 3 - Unordered Item 1
+       - Level 4 - Unordered Item 1
 
-## Heading Level 2
-
-This is a paragraph with some *italic text* and some **bold text**.
-
-### Heading Level 3
-
-> This is a block quote
-
-This is some inline code: `let x = 10;`
-Block code ```can't be in``` be in a paragraph. 
-
-`Inline Code`
-
-~~Non-nested strikethrough~~
-
-And here is a valid code block:
-```
-fn main() {
-    println!("HELLO, world!");
-}
-```
-~~STRIKETHROUGH~~
-This is another paragraph with a [link to Rust's website](https://www.rust-lang.org).
-- HELLO
-    - Hello
-    1. Hello
-    2. Goodbye
-1. Hello
