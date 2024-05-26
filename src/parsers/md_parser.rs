@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::Read;
+
+use clap::Parser;
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 enum MarkdownState {
@@ -23,6 +26,9 @@ struct MDParser {
     length: usize,
     index: usize,
     list_level: usize,
+    max_list_level: usize,
+    indent_to_list_level: BTreeMap<usize, usize>,
+    indentation_level: usize,
     states: Vec<MarkdownState>,
 }
 
@@ -33,12 +39,17 @@ impl MDParser {
         md_file.read_to_string(&mut text).expect("Read Error");
         text = MDParser::preprocess_md(text);
         let length = text.len();
+        let mut list_map = BTreeMap::new();
+        list_map.insert(0, 1);
         MDParser {
             text,
             html,
             length,
             index: 0,
-            list_level: 0,
+            list_level: 1,
+            max_list_level: 1,
+            indent_to_list_level: list_map,
+            indentation_level: 0,
             states: vec![MarkdownState::TEXT],
         }
     }
@@ -47,12 +58,12 @@ impl MDParser {
         let lines = md_contents.lines();
         let mut new_lines: Vec<&str> = Vec::new();
         let mut in_code_block = false;
-        for mut line in lines {
+        for line in lines {
+            if line.trim().is_empty() {
+                continue;
+            }
             if line.starts_with("```") {
                 in_code_block = !in_code_block;
-            }
-            if !in_code_block {
-                line = line.trim_start();
             }
             new_lines.push(line);
         }
@@ -217,33 +228,75 @@ impl MDParser {
     }
 
     // NOTE: Currently don't support nested lists
-    fn handle_ordered_list(&mut self) {
-        self.push_state(MarkdownState::LIST);
-        self.html.push_str("    <li>");
+    fn handle_list_items(&mut self) {
+        let spaces = " ".repeat(self.list_level * 4);
+        self.html.push_str(&format!("{}<li>", spaces));
         self.parse_inline();
-        self.html.push_str("</li>");
-        self.pop_state();
-        self.optionally_push_newline();
-
-        if self.index + 1 < self.length
-            && self.get_ith_char(self.index).unwrap().is_digit(10)
-            && self.get_ith_char(self.index + 1).unwrap() == '.'
-        {
-            self.index += 2;
-            self.handle_ordered_list();
+        self.html.push_str("</li>\n");
+        let curr_indent = self.find_distance_to_non_whitespace(self.index);
+        if curr_indent == 0 {
+            return;
         }
-    }
+        let indent_difference: i32 = curr_indent as i32 - self.indentation_level as i32;
+        if indent_difference > 5 {
+            return;
+        }
+        let curr_char = match self.get_ith_char(self.index + curr_indent) {
+            Some(x) => x,
+            None => ';',
+        };
+        // Find the appropriate list level based off of the indentation level
+        let curr_list_level = match self.indent_to_list_level.get(&curr_indent) {
+            Some(&x) => x.clone(),
+            None => {
+                // If there exists a higher index level we've already dealt with, then
+                // we try to find the closest indent level that is less than
+                // the current indent level
+                // if nothing is less than it, then we add a new level
 
-    fn handle_list(&mut self) {
-        self.push_state(MarkdownState::LIST);
-        self.html.push_str("    <li>");
-        self.parse_inline();
-        self.html.push_str("</li>");
-        self.pop_state();
-        self.optionally_push_newline();
-        if self.index < self.length && self.get_ith_char(self.index).unwrap() == '-' {
+                let mut higher_indent = self.indent_to_list_level.range(curr_indent + 1..);
+                if higher_indent.next().is_some() {
+                    let closest_key = self.indent_to_list_level.range(..curr_indent).next_back();
+                    match closest_key {
+                        Some((&_k, &v)) => v.clone(),
+                        None => {
+                            panic!("There should always be a lower indent level than the curr, if there is a higher one");
+                        }
+                    }
+                } else {
+                    self.max_list_level += 1;
+                    self.indent_to_list_level
+                        .insert(curr_indent, self.max_list_level);
+                    self.max_list_level
+                }
+            }
+        };
+        self.list_level = curr_list_level;
+        println!("{}", curr_char);
+        if curr_char == '-' {
+            self.index += curr_indent;
             self.index += 1;
-            self.handle_list();
+            self.indentation_level = curr_indent;
+            if indent_difference == 0 {
+                self.handle_list_items();
+            } else if indent_difference <= 5 {
+                self.indent_to_list_level
+                    .insert(curr_indent, self.list_level);
+                self.handle_unordered_list();
+            }
+        } else if curr_char.is_digit(10) {
+            if !self.check_next_chars(self.index + curr_indent + 1, ".") {
+                return;
+            }
+            println!("Indent Difference: {}", indent_difference);
+            self.index += curr_indent;
+            self.index += 2;
+            self.indentation_level = curr_indent;
+            if indent_difference == 0 {
+                self.handle_list_items();
+            } else if indent_difference <= 5 {
+                self.handle_ordered_list();
+            }
         }
     }
 
@@ -345,6 +398,18 @@ impl MDParser {
         }
     }
 
+    fn find_distance_to_non_whitespace(&mut self, mut start_index: usize) -> usize {
+        let mut indentation: usize = 0;
+        while let Some(x) = self.get_ith_char(start_index) {
+            match x {
+                ' ' => indentation += 1,
+                _ => return indentation,
+            }
+            start_index += 1;
+        }
+        0
+    }
+
     fn get_ith_char(&self, index: usize) -> Option<char> {
         if index >= self.length {
             return None;
@@ -389,6 +454,27 @@ impl MDParser {
         }
         false
     }
+
+    fn handle_ordered_list(&mut self) {
+        self.push_state(MarkdownState::LIST);
+        let spaces = " ".repeat((self.list_level - 1) * 4);
+        self.html.push_str(&format!("{}<ol>\n", spaces));
+        self.index += 1;
+        self.handle_list_items();
+        self.html.push_str(&format!("{}</ol>\n", spaces));
+        self.pop_state();
+    }
+
+    fn handle_unordered_list(&mut self) {
+        // Ok
+        self.push_state(MarkdownState::LIST);
+        let spaces = " ".repeat((self.list_level - 1) * 4);
+        self.html.push_str(&format!("{}<ul>\n", spaces));
+        self.index += 1;
+        self.handle_list_items();
+        self.html.push_str(&format!("{}</ul>\n", spaces));
+        self.pop_state();
+    }
 }
 
 pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
@@ -410,22 +496,20 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 '[' => parser.handle_link(),
                 '`' => parser.handle_code(),
                 '~' => parser.handle_strikethrough(),
-                '-' => {
-                    parser.html.push_str("<ul>\n");
-                    parser.index += 1;
-                    parser.list_level += 1;
-                    parser.handle_list();
-                    parser.html.push_str("</ul>\n");
-                    parser.list_level -= 1;
-                    parser.index += 1;
-                }
                 '>' => parser.handle_quotes(),
                 '\n' => parser.index += 1,
+                '-' => {
+                    parser.handle_unordered_list();
+                    parser.list_level = 1;
+                    parser.max_list_level = 1;
+                    // Clear the BTreeMap of everyting but the 0,0 pair
+                    parser.indent_to_list_level.retain(|&k, _| k == 0);
+                }
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
-                    parser.html.push_str("<ol>\n");
-                    parser.index += 2;
                     parser.handle_ordered_list();
-                    parser.html.push_str("</ol>\n");
+                    parser.list_level = 1;
+                    parser.max_list_level = 1;
+                    parser.indent_to_list_level.retain(|&k, _| k == 0);
                 }
 
                 _ => {
