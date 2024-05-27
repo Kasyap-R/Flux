@@ -21,13 +21,20 @@ enum MarkdownState {
     QUOTE,
 }
 
+enum ListType {
+    Ordered,
+    Unordered,
+    NOTHING,
+}
+
 struct MDParser {
     text: String,
     html: String,
     length: usize,
     index: usize,
-    list_level: usize,
+    list_level: Option<usize>,
     max_list_level: usize,
+    curr_list_type: ListType,
     indent_to_list_level: BTreeMap<usize, usize>,
     indentation_level: usize,
     states: Vec<MarkdownState>,
@@ -47,8 +54,9 @@ impl MDParser {
             html,
             length,
             index: 0,
-            list_level: 1,
+            list_level: Some(1),
             max_list_level: 1,
+            curr_list_type: ListType::NOTHING,
             indent_to_list_level: list_map,
             indentation_level: 0,
             states: vec![MarkdownState::TEXT],
@@ -228,85 +236,83 @@ impl MDParser {
         }
     }
 
-    // NOTE: Currently don't support nested lists
-    fn handle_list_items(&mut self) {
-        let spaces = " ".repeat(self.list_level * 4);
-        self.html.push_str(&format!("{}<li>", spaces));
-        self.parse_inline();
-        self.html.push_str("</li>\n");
-        let curr_indent = self.find_distance_to_non_whitespace(self.index);
-
-        let indent_difference: i32 = curr_indent as i32 - self.indentation_level as i32;
-        if indent_difference > 5 {
-            return;
-        }
-        let curr_char = match self.get_ith_char(self.index + curr_indent) {
-            Some(x) => x,
-            None => ';',
-        };
-        // Find the appropriate list level based off of the indentation level
-        let curr_list_level = match self.indent_to_list_level.get(&curr_indent) {
-            Some(&x) => x.clone(),
+    fn get_list_level_from_indent(&mut self, indent_level: usize) -> (usize, usize) {
+        match self.indent_to_list_level.get(&indent_level) {
+            Some(&x) => (indent_level, x.clone()),
             None => {
                 // If there exists a higher index level we've already dealt with, then
                 // we try to find the closest indent level that is less than
                 // the current indent level
                 // if nothing is less than it, then we add a new level
 
-                let mut higher_indent = self.indent_to_list_level.range(curr_indent + 1..);
+                let mut higher_indent = self.indent_to_list_level.range(indent_level + 1..);
                 if higher_indent.next().is_some() {
-                    let closest_key = self.indent_to_list_level.range(..curr_indent).next_back();
+                    let closest_key = self.indent_to_list_level.range(..indent_level).next_back();
                     match closest_key {
-                        Some((&_k, &v)) => v.clone(),
+                        Some((&k, &v)) => (k.clone(), v.clone()),
                         None => {
                             panic!("Curr indent is not highest, but nothing lower exists");
                         }
                     }
                 } else {
-                    self.max_list_level += 1;
                     self.indent_to_list_level
-                        .insert(curr_indent, self.max_list_level);
-                    self.max_list_level
+                        .insert(indent_level, self.max_list_level);
+                    (indent_level, self.max_list_level)
                 }
             }
-        };
-        let current_state: MarkdownState = self.get_current_state();
-        match current_state {
-            MarkdownState::OrderedList | MarkdownState::UnorderedList => (),
-            _ => panic!("Parsing list, but current state is NOT list"),
         }
-        self.list_level = curr_list_level;
-        println!("{}", curr_char);
+    }
+
+    // Each of the bottom two handle functions will record what list level they were associated
+    // with. If our list level is valid (i.e. the next line contains a list) and equivalent to theirs, they know to keep going. Every
+    // time our indentation level is lower than it was previously, we will decrease the size of the
+    // callstack until we get to a function that was called to handle that level
+    fn handle_list_items(&mut self) {
+        println!("List Level: {}", self.list_level.unwrap());
+        println!("Curr_indent: {}", self.indentation_level);
+        let spaces = " ".repeat(self.list_level.unwrap() * 4);
+        self.html.push_str(&format!("{}<li>", spaces));
+        self.parse_inline();
+        self.html.push_str("</li>\n");
+        self.list_level = None;
+        let dist_to_char = self.find_distance_to_non_whitespace(self.index);
+        let indent_difference: i32 = dist_to_char as i32 - self.indentation_level as i32;
+        if indent_difference > 5 {
+            return;
+        }
+        // If the curr indent level exists in the map and there is a swap in list type, then return
+        // But that doesn't mean we stop parsing at this indent level
+        let curr_char = match self.get_ith_char(self.index + dist_to_char) {
+            Some(x) => x,
+            None => ' ',
+        };
+        // Find the appropriate list level based off of the indentation level
+        let (curr_indent, curr_list_level) = self.get_list_level_from_indent(dist_to_char);
+        let current_state: MarkdownState = self.get_current_state();
         if curr_char == '-' {
-            // If the curr indent level exists in the map and there is a swap in list type, then return
-            // But that doesn't mean we stop parsing at this indent level
-            if self.indent_to_list_level.contains_key(&curr_indent)
-                && current_state != MarkdownState::UnorderedList
-            {
+            self.list_level = Some(curr_list_level);
+            self.index += dist_to_char;
+            self.indentation_level = curr_indent;
+            if indent_difference < 0 {
                 return;
             }
-            self.index += curr_indent;
-            self.index += 1;
-            self.indentation_level = curr_indent;
             if current_state == MarkdownState::UnorderedList && indent_difference == 0 {
+                self.index += 1;
                 self.handle_list_items();
             } else {
                 self.handle_unordered_list();
             }
-        } else if curr_char.is_digit(10) {
-            if !self.check_next_chars(self.index + curr_indent + 1, ".") {
-                return;
-            }
-            if self.indent_to_list_level.contains_key(&curr_indent)
-                && current_state != MarkdownState::OrderedList
-            {
-                return;
-            }
-            println!("Indent Difference: {}", indent_difference);
-            self.index += curr_indent;
-            self.index += 2;
+        } else if curr_char.is_digit(10)
+            && self.check_next_chars(self.index + dist_to_char + 1, ".")
+        {
+            self.list_level = Some(curr_list_level);
+            self.index += dist_to_char;
             self.indentation_level = curr_indent;
+            if indent_difference < 0 || indent_difference > 5 {
+                return;
+            }
             if current_state == MarkdownState::OrderedList && indent_difference == 0 {
+                self.index += 2;
                 self.handle_list_items();
             } else {
                 self.handle_ordered_list();
@@ -471,21 +477,37 @@ impl MDParser {
 
     fn handle_ordered_list(&mut self) {
         self.push_state(MarkdownState::OrderedList);
-        let spaces = " ".repeat((self.list_level - 1) * 4);
+        let spaces = " ".repeat((self.list_level.unwrap() - 1) * 4);
         self.html.push_str(&format!("{}<ol>\n", spaces));
-        self.index += 1;
+        self.index += 2;
         self.handle_list_items();
         self.html.push_str(&format!("{}</ol>\n", spaces));
         self.pop_state();
     }
 
     fn handle_unordered_list(&mut self) {
-        // Ok
         self.push_state(MarkdownState::UnorderedList);
-        let spaces = " ".repeat((self.list_level - 1) * 4);
+        let list_level_snapshot = self.list_level.unwrap();
+        let indent_level_snapshot = self.indentation_level;
+        let spaces = " ".repeat((list_level_snapshot - 1) * 4);
         self.html.push_str(&format!("{}<ul>\n", spaces));
-        self.index += 1;
-        self.handle_list_items();
+        while let Some(x) = self.list_level {
+            if x == list_level_snapshot {
+                self.index += 1;
+                self.max_list_level += 1;
+                self.handle_list_items();
+                self.max_list_level -= 1;
+            } else {
+                println!(
+                    "Removing list level: {}",
+                    self.indent_to_list_level
+                        .get(&indent_level_snapshot)
+                        .unwrap()
+                );
+                self.indent_to_list_level.remove(&indent_level_snapshot);
+                break;
+            }
+        }
         self.html.push_str(&format!("{}</ul>\n", spaces));
         self.pop_state();
     }
@@ -514,7 +536,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 '\n' => parser.index += 1,
                 '-' => {
                     parser.handle_unordered_list();
-                    parser.list_level = 1;
+                    parser.list_level = Some(1);
                     parser.max_list_level = 1;
                     // Clear the BTreeMap of everyting but the 0,0 pair
                     parser.indent_to_list_level.retain(|&k, _| k == 0);
@@ -522,7 +544,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 }
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
                     parser.handle_ordered_list();
-                    parser.list_level = 1;
+                    parser.list_level = Some(1);
                     parser.max_list_level = 1;
                     parser.indent_to_list_level.retain(|&k, _| k == 0);
                     parser.indentation_level = 0;
