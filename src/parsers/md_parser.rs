@@ -21,9 +21,10 @@ enum MarkdownState {
     QUOTE,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ListType {
-    Ordered,
-    Unordered,
+    ORDERED,
+    UNORDERED,
     NOTHING,
 }
 
@@ -268,6 +269,7 @@ impl MDParser {
     // time our indentation level is lower than it was previously, we will decrease the size of the
     // callstack until we get to a function that was called to handle that level
     fn handle_list_items(&mut self) {
+        let list_type_snapshot = self.curr_list_type;
         println!("List Level: {}", self.list_level.unwrap());
         println!("Curr_indent: {}", self.indentation_level);
         let spaces = " ".repeat(self.list_level.unwrap() * 4);
@@ -277,7 +279,7 @@ impl MDParser {
         self.list_level = None;
         let dist_to_char = self.find_distance_to_non_whitespace(self.index);
         let indent_difference: i32 = dist_to_char as i32 - self.indentation_level as i32;
-        if indent_difference > 5 {
+        if indent_difference > 8 {
             return;
         }
         // If the curr indent level exists in the map and there is a swap in list type, then return
@@ -290,32 +292,39 @@ impl MDParser {
         let (curr_indent, curr_list_level) = self.get_list_level_from_indent(dist_to_char);
         let current_state: MarkdownState = self.get_current_state();
         if curr_char == '-' {
+            self.curr_list_type = ListType::UNORDERED;
             self.list_level = Some(curr_list_level);
             self.index += dist_to_char;
             self.indentation_level = curr_indent;
-            if indent_difference < 0 {
+            if indent_difference < 0
+                || (list_type_snapshot != self.curr_list_type && indent_difference == 0)
+            {
                 return;
             }
             if current_state == MarkdownState::UnorderedList && indent_difference == 0 {
                 self.index += 1;
                 self.handle_list_items();
             } else {
-                self.handle_unordered_list();
+                self.handle_list(ListType::UNORDERED);
             }
         } else if curr_char.is_digit(10)
             && self.check_next_chars(self.index + dist_to_char + 1, ".")
         {
+            self.curr_list_type = ListType::ORDERED;
             self.list_level = Some(curr_list_level);
-            self.index += dist_to_char;
+            self.index += dist_to_char + 1;
             self.indentation_level = curr_indent;
-            if indent_difference < 0 || indent_difference > 5 {
+            // If we are dealing with a lower level or the same level with a different type
+            if indent_difference < 0
+                || (list_type_snapshot != self.curr_list_type && indent_difference == 0)
+            {
                 return;
             }
             if current_state == MarkdownState::OrderedList && indent_difference == 0 {
                 self.index += 2;
                 self.handle_list_items();
             } else {
-                self.handle_ordered_list();
+                self.handle_list(ListType::ORDERED);
             }
         }
     }
@@ -385,7 +394,6 @@ impl MDParser {
             }
             let char = self.get_ith_char(self.index).unwrap();
             if char == '\n' {
-                self.html.push(' ');
                 self.index += 1;
                 break;
             }
@@ -475,29 +483,37 @@ impl MDParser {
         false
     }
 
-    fn handle_ordered_list(&mut self) {
-        self.push_state(MarkdownState::OrderedList);
-        let spaces = " ".repeat((self.list_level.unwrap() - 1) * 4);
-        self.html.push_str(&format!("{}<ol>\n", spaces));
-        self.index += 2;
-        self.handle_list_items();
-        self.html.push_str(&format!("{}</ol>\n", spaces));
-        self.pop_state();
-    }
-
-    fn handle_unordered_list(&mut self) {
-        self.push_state(MarkdownState::UnorderedList);
+    fn handle_list(&mut self, list_type: ListType) {
         let list_level_snapshot = self.list_level.unwrap();
+        println!("Creating handle_list for level: {}", list_level_snapshot);
         let indent_level_snapshot = self.indentation_level;
+        self.curr_list_type = list_type;
+        let list_type_snapshot = self.curr_list_type;
         let spaces = " ".repeat((list_level_snapshot - 1) * 4);
-        self.html.push_str(&format!("{}<ul>\n", spaces));
+        match list_type {
+            ListType::ORDERED => {
+                self.html.push_str(&format!("{}<ol>\n", spaces));
+                self.push_state(MarkdownState::OrderedList);
+            }
+            ListType::UNORDERED => {
+                self.html.push_str(&format!("{}<ul>\n", spaces));
+                self.push_state(MarkdownState::UnorderedList);
+            }
+            ListType::NOTHING => panic!("list_type argument should not be 'NOTHING'"),
+        }
+        self.curr_list_type = list_type;
+
         while let Some(x) = self.list_level {
-            if x == list_level_snapshot {
+            if x == list_level_snapshot && self.curr_list_type == list_type_snapshot {
                 self.index += 1;
                 self.max_list_level += 1;
                 self.handle_list_items();
                 self.max_list_level -= 1;
+            } else if x == list_level_snapshot {
+                println!("Changing types at list level: {}", x);
+                break;
             } else {
+                println!("Removing Indent Level: {}", indent_level_snapshot);
                 println!(
                     "Removing list level: {}",
                     self.indent_to_list_level
@@ -508,8 +524,22 @@ impl MDParser {
                 break;
             }
         }
-        self.html.push_str(&format!("{}</ul>\n", spaces));
+        match list_type {
+            ListType::ORDERED => {
+                self.html.push_str(&format!("{}</ol>\n", spaces));
+            }
+            ListType::UNORDERED => {
+                self.html.push_str(&format!("{}</ul>\n", spaces));
+            }
+            ListType::NOTHING => panic!("list_type argument should not be 'NOTHING'"),
+        }
         self.pop_state();
+        //
+        if let Some(x) = self.list_level {
+            if x == list_level_snapshot {
+                self.handle_list(self.curr_list_type);
+            }
+        }
     }
 }
 
@@ -535,7 +565,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                 '>' => parser.handle_quotes(),
                 '\n' => parser.index += 1,
                 '-' => {
-                    parser.handle_unordered_list();
+                    parser.handle_list(ListType::UNORDERED);
                     parser.list_level = Some(1);
                     parser.max_list_level = 1;
                     // Clear the BTreeMap of everyting but the 0,0 pair
@@ -543,7 +573,7 @@ pub fn md_to_html(md_path: &str) -> Result<String, &'static str> {
                     parser.indentation_level = 0;
                 }
                 _ if char.is_digit(10) && parser.get_ith_char(i + 1).unwrap() == '.' => {
-                    parser.handle_ordered_list();
+                    parser.handle_list(ListType::ORDERED);
                     parser.list_level = Some(1);
                     parser.max_list_level = 1;
                     parser.indent_to_list_level.retain(|&k, _| k == 0);
